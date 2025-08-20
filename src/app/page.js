@@ -1,103 +1,95 @@
-import Image from "next/image";
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { io } from "socket.io-client";
 
 export default function Home() {
-  return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              src/app/page.js
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+  const router = useRouter();
+  const socketRef = useRef(null);
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState("");
+  const [username, setUsername] = useState("");
+  const handleLogout = () => {
+  localStorage.removeItem("loggedIn");
+  localStorage.removeItem("username");
+  router.push("/loginpage");
+};
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+  useEffect(() => {
+    const loggedIn = localStorage.getItem("loggedIn");
+    const storedUsername = localStorage.getItem("username");
+    if (!loggedIn) {
+      router.push("/loginpage");
+      return;
+    }
+    setUsername(storedUsername || "");
+    socketRef.current = io("http://localhost:3001");
+    socketRef.current.on("chat message", (msg) => {
+      setMessages((prev) => [...prev, msg]);
+    });
+    // Optionally, load chat history if your backend supports it
+    return () => {
+      socketRef.current.disconnect();
+    };
+  }, [router]);
+
+  const handleSend = (e) => {
+    e.preventDefault();
+    if (input.trim() && socketRef.current) {
+      const msg = { user: username || "Anonymous", text: input };
+      socketRef.current.emit("chat message", msg);
+      setMessages((prev) => [...prev, msg]); // Optimistic update
+      setInput("");
+    }
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", position: "relative", background: "#000000ff" }}>
+      <div style={{ maxWidth: 500, margin: "2rem auto", padding: 20, border: "1px solid #ccc", borderRadius: 8, background: "#000000ff" }}>
+        <h2>Chat Room</h2>
+        <div style={{ height: 300, overflowY: "auto", border: "1px solid #808080ff", marginBottom: 10, padding: 10, background: "#ffffffff" }}>
+          {messages.length === 0 ? (
+            <div style={{ color: "#000000ff" }}>No messages yet.</div>
+          ) : ( 
+            messages.map((msg, idx) => (
+              <div key={idx} style={{ marginBottom: 6 }}>
+                <b>{msg.user}:</b> {msg.text}
+              </div>
+            ))
+          )}
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
+        <form onSubmit={handleSend} style={{ display: "flex", gap: 8 }}>
+          <input
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Type a message..."
+            style={{ flex: 1, padding: 8 }}
           />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
+          <button type="submit" style={{ padding: "8px 16px" }}>Send</button>
+        </form>
+      </div>
+      {/* Logout button fixed at the bottom center */}
+      <div style={{ position: "fixed", left: 0, bottom: 30, width: "100%", display: "flex", justifyContent: "center", pointerEvents: "none" }}>
+        <button
+          onClick={handleLogout}
+          style={{
+            pointerEvents: "auto",
+            padding: "12px 32px",
+            background: "#20ddffff",
+            color: "#000000ff",
+            border: "none",
+            borderRadius: 24,
+            fontWeight: "bold",
+            fontSize: 18,
+            boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
+            cursor: "pointer"
+          }}
         >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+          Logout
+        </button>
+      </div>
     </div>
   );
 }
