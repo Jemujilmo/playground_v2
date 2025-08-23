@@ -53,8 +53,18 @@ io.on('connection', (socket) => {
     chatHistory.push(msg);
   });
 
-  socket.on('disconnect', () => {
+  // Handle user disconnect
+  
+  socket.on('disconnect', async () => {
     console.log('User disconnected:', socket.id);
+      if (socket.username) {
+    await db.read();
+    const user = db.data.users.find(u => u.username === socket.username);
+    if (user) {
+      user.status = "offline";
+      await db.write();
+    }
+  }
     if (currentRoom) {
       io.to(currentRoom).emit('message', {
         user: 'admin',
@@ -63,18 +73,23 @@ io.on('connection', (socket) => {
     }
   });
   //login handler to check credentials
-  socket.on('login', async ({ username, password }) => {
-    await db.read();
-    const user = db.data.users.find(u => u.username === username);
-    if (!user) {
-      socket.emit('login error', { message: 'Invalid username or password' });
-      return;
-    }
-    const valid = await bcrypt.compare(password, user.password);
-    if (!valid) {
-      socket.emit('login error', { message: 'Invalid username or password' });
-      return;
-    }
+socket.on('login', async ({ username, password }) => {
+  await db.read();
+  const user = db.data.users.find(u => u.username === username);
+  if (!user) {
+    socket.emit('login error', { message: 'Invalid username or password' });
+    return;
+  }
+  const valid = await bcrypt.compare(password, user.password);
+  if (!valid) {
+    socket.emit('login error', { message: 'Invalid username or password' });
+    return;
+  }
+  user.status = "online";
+  await db.write();
+  socket.emit('login success', { username });
+});
+
     console.log('User logged in:', username);
     socket.username = username;
     socket.emit('login success', { username });
@@ -112,7 +127,7 @@ socket.on('join room', (room) => {
     socket.emit('chat history', chatHistory);
   }
 });
-});
+
 
 // Start the server
 const PORT = 3001;
