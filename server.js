@@ -10,8 +10,8 @@ const io = new Server(server, {
   }
 });
 
-// Store all chat data to the server
-const chatHistory = {};
+// Store all chat data globally (static, accessible to all users)
+const chatHistory = [];
 
 // lowdb, this was a bitch to get working
 const { Low } = require('lowdb');
@@ -44,10 +44,25 @@ io.on('connection', (socket) => {
     db.data.users.push({ username, password: hashedPassword });
     await db.write();
     console.log('User registered:', username);
-    socket.emit('register success', { username });
+    socket.emit('Register success', { username });
+  });
+  socket.on('chat message', (msg) => {
+    // Broadcast the message to all clients in the current room
+    io.to(currentRoom).emit('chat message', msg);
+    // Store the message in the global chat history
+    chatHistory.push(msg);
   });
 
-  //login event handler to check credentials
+  socket.on('disconnect', () => {
+    console.log('User disconnected:', socket.id);
+    if (currentRoom) {
+      io.to(currentRoom).emit('message', {
+        user: 'admin',
+        text: `${socket.username} has disconnected.`
+      });
+    }
+  });
+  //login handler to check credentials
   socket.on('login', async ({ username, password }) => {
     await db.read();
     const user = db.data.users.find(u => u.username === username);
@@ -61,38 +76,42 @@ io.on('connection', (socket) => {
       return;
     }
     console.log('User logged in:', username);
+    socket.username = username;
     socket.emit('login success', { username });
   });
 
   // Room and chat logic
   let currentRoom = null;
 
-  socket.on('join room', (room) => {
-    if (currentRoom) {
-      socket.leave(currentRoom);
-    }
-    currentRoom = room;
-    socket.join(room);
-    // Send chat history to the user when they join a room
-    if (chatHistory[room]) {
-      socket.emit('chat history', chatHistory[room]);
-    }
+socket.on('join room', (room) => {
+  if (currentRoom) {
+    // Notify room that user left
+    io.to(currentRoom).emit('message', {
+      user: 'admin',
+      text: `${socket.username} has left the room.`
+    });
+    socket.leave(currentRoom);
+  }
+  currentRoom = room;
+  socket.join(room);
+
+  // Welcome to the user
+  socket.emit('message', {
+    user: 'admin',
+    text: `${socket.username}, welcome to room ${room}.`
   });
 
-  socket.on('chat message', (msg) => {
-    // Broadcast the message to all clients in the current room
-    io.to(currentRoom).emit('chat message', msg);
-    // Store the message in the chat history
-    if (!chatHistory[currentRoom]) {
-      chatHistory[currentRoom] = [];
-    }
-    chatHistory[currentRoom].push(msg);
+  // Public join message to the room
+  socket.to(room).emit('message', {
+    user: 'admin',
+    text: `${socket.username} has joined the room.`
   });
 
-  socket.on('disconnect', () => {
-    console.log('User disconnected:', socket.id);
-  });
-
+  // Send global chat history to the user when they join a room
+  if (chatHistory.length > 0) {
+    socket.emit('chat history', chatHistory);
+  }
+});
 });
 
 // Start the server
