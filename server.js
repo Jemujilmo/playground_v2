@@ -10,8 +10,8 @@ const io = new Server(server, {
   }
 });
 
-// Store all chat data globally (static, accessible to all users)
-const chatHistory = [];
+// Store all chat data to the server
+const chatHistory = {};
 
 // lowdb, this was a bitch to get working
 const { Low } = require('lowdb');
@@ -19,7 +19,6 @@ const { JSONFile } = require('lowdb/node');
 const db = new Low(new JSONFile('users.json'), { users: [] });
 const bcrypt = require('bcryptjs');
 
-// ...rest of your code...
 
 async function initDB() {
   await db.read();
@@ -47,58 +46,58 @@ io.on('connection', (socket) => {
     socket.emit('Register success', { username });
   });
   socket.on('chat message', (msg) => {
-    // Broadcast the message to all clients in the current room
+    // 'user connected' message to all users in the current room
     io.to(currentRoom).emit('chat message', msg);
-    // Store the message in the global chat history
-    chatHistory.push(msg);
+    // Store the message in the chat history
+    if (!chatHistory[currentRoom]) {
+      chatHistory[currentRoom] = [];
+    }
+    chatHistory[currentRoom].push(msg);
   });
 
-  // Handle user disconnect
-  
-  socket.on('disconnect', async () => {
+  socket.on('disconnect', () => {
     console.log('User disconnected:', socket.id);
-      if (socket.username) {
-    await db.read();
-    const user = db.data.users.find(u => u.username === socket.username);
-    if (user) {
-      user.status = "offline";
-      await db.write();
-    }
-  }
+
     if (currentRoom) {
       io.to(currentRoom).emit('message', {
         user: 'admin',
         text: `${socket.username} has disconnected.`
       });
     }
+
+    if (socket.username) {
+      db.read();
+      const user = db.data.users.find(u => u.username === socket.username);
+      if (user) {
+        user.status = "offline";
+        db.write();
+      }
+    }
   });
   //login handler to check credentials
-socket.on('login', async ({ username, password }) => {
-  await db.read();
-  const user = db.data.users.find(u => u.username === username);
-  if (!user) {
-    socket.emit('login error', { message: 'Invalid username or password' });
-    return;
-  }
-  const valid = await bcrypt.compare(password, user.password);
-  if (!valid) {
-    socket.emit('login error', { message: 'Invalid username or password' });
-    return;
-  }
-  user.status = "online";
-  await db.write();
-  socket.emit('login success', { username });
-});
-
+  socket.on('login', async ({ username, password }) => {
+    await db.read();
+    const user = db.data.users.find(u => u.username === username);
+    if (!user) {
+      socket.emit('login error', { message: 'Invalid username or password' });
+      return;
+    }
+    const valid = await bcrypt.compare(password, user.password);
+    if (!valid) {
+      socket.emit('login error', { message: 'Invalid username or password' });
+      return;
+    }
     console.log('User logged in:', username);
     socket.username = username;
+    user.status = "online";
+    await db.write();
     socket.emit('login success', { username });
   });
 
   // Room and chat logic
   let currentRoom = null;
 
-socket.on('join room', (room) => {
+    socket.on('join room', (room) => {
   if (currentRoom) {
     // Notify room that user left
     io.to(currentRoom).emit('message', {
@@ -122,12 +121,12 @@ socket.on('join room', (room) => {
     text: `${socket.username} has joined the room.`
   });
 
-  // Send global chat history to the user when they join a room
-  if (chatHistory.length > 0) {
-    socket.emit('chat history', chatHistory);
+  // Send chat history to the user when they join a room
+  if (chatHistory[room]) {
+    socket.emit('chat history', chatHistory[room]);
   }
 });
-
+});
 
 // Start the server
 const PORT = 3001;
