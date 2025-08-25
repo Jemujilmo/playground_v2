@@ -19,7 +19,6 @@ const { JSONFile } = require('lowdb/node');
 const db = new Low(new JSONFile('users.json'), { users: [] });
 const bcrypt = require('bcryptjs');
 
-
 async function initDB() {
   await db.read();
   if (!db.data) db.data = { users: [] };
@@ -27,10 +26,21 @@ async function initDB() {
 }
 initDB();
 
+const userPings = new Map(); // username -> last ping timestamp
+
 // Handle socket.io connections
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
-  
+  // Set username for this socket
+  socket.on('set username', (username) => {
+    socket.username = username;
+    console.log(`Socket ${socket.id} associated with username: ${username}`);
+  });
+  // Send user list on request
+  socket.on('get users', async () => {
+    await db.read();
+    socket.emit('user status update', db.data.users.map(({ username, status }) => ({ username, status })));
+  });
   // Register user credentials to the server (persistent, hashed)
   socket.on('register', async ({ username, password }) => {
     await db.read();
@@ -56,22 +66,17 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
-    console.log('User disconnected:', socket.id);
-
+    // No status logic here; handled by ping timeout
+    if (socket.username) {
+      console.log(`User disconnected: ${socket.username}`);
+    } else {
+      console.log('User disconnected:', socket.id);
+    }
     if (currentRoom) {
       io.to(currentRoom).emit('message', {
         user: 'admin',
-        text: `${socket.username} has disconnected.`
+        text: `${socket.username || socket.id} has disconnected.`
       });
-    }
-
-    if (socket.username) {
-      db.read();
-      const user = db.data.users.find(u => u.username === socket.username);
-      if (user) {
-        user.status = "offline";
-        db.write();
-      }
     }
   });
   //login handler to check credentials
@@ -89,12 +94,11 @@ io.on('connection', (socket) => {
     }
     console.log('User logged in:', username);
     socket.username = username;
-    user.status = "online";
-    await db.write();
+  // No status logic here; handled by ping system
     socket.emit('login success', { username });
   });
 
-  // Room and chat logic
+  //Room and chat logic
   let currentRoom = null;
 
     socket.on('join room', (room) => {
@@ -109,27 +113,58 @@ io.on('connection', (socket) => {
   currentRoom = room;
   socket.join(room);
 
-  // Welcome to the user
+  //Welcome to the user
   socket.emit('message', {
     user: 'admin',
     text: `${socket.username}, welcome to room ${room}.`
   });
 
-  // Public join message to the room
+  //Public join message to the room
   socket.to(room).emit('message', {
     user: 'admin',
     text: `${socket.username} has joined the room.`
   });
 
-  // Send chat history to the user when they join a room
+  //Send chat history to the user when they join a room
   if (chatHistory[room]) {
     socket.emit('chat history', chatHistory[room]);
   }
 });
+  // Classic ping system for online status
+  socket.on('ping', async ({ username }) => {
+    if (!username) return;
+    userPings.set(username, Date.now());
+    await db.read();
+    const user = db.data.users.find(u => u.username === username);
+    if (user && user.status !== 'online') {
+      user.status = 'online';
+      await db.write();
+      io.emit('user status update', db.data.users.map(({ username, status }) => ({ username, status })));
+    }
+  });
 });
 
-// Start the server
+//Start the server
 const PORT = 3001;
 server.listen(PORT, () => {
   console.log(`Socket.io server running on port ${PORT}`);
 });
+setInterval(async () => {
+  await db.read();
+  const now = Date.now();
+  let changed = false;
+  for (const user of db.data.users) {
+    const last = userPings.get(user.username);
+    if (user.status === 'online' && (!last || now - last > 30000)) {
+      user.status = 'offline';
+      userPings.delete(user.username);
+      changed = true;
+    }
+  }
+  if (changed) {
+    await db.write();
+    io.emit('user status update', db.data.users.map(({ username, status }) => ({ username, status })));
+  } else {
+    await db.write();
+  }
+}, 10000); //activity check
