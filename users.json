@@ -3,12 +3,17 @@
     {
       "username": "KrystianP",
       "password": "$2b$10$ijw1sTsEJ2GBN5ePT2g77.jufAa8zi6Sj1WwNzPTE16IyahNhlD.O",
-      "status": "online"
+      "status": "offline"
     },
     {
       "username": "Elizabeth",
       "password": "$2b$10$kYiqniQSkRmQGis8DGECFueba9A7MHQaRxziL1.0z0u0fpO3JCbWG",
       "status": "offline"
+    },
+    {
+      "username": "KPAdmin",
+      "password": "$2b$10$cZRvxA8x6mOVg2qKw7p5suahTkkDAcq977uqlYDBypNt1Rg6hSFsC",
+      "status": "online"
     }
   ]
 }
