@@ -69,25 +69,30 @@ const privateRooms = {}; // { roomId: { members: [username], invites: [username]
 const userInvites = {}; // { username: [roomId, ...] }
 
   // Create a private room
-socket.on('create private room', ({ roomName }) => {
-  if (!socket.username) return;
-  const roomId = 'room_' + Math.random().toString(36).substr(2, 9);
-  privateRooms[roomId] = {
-    members: [socket.username],
-    invites: [],
-    name: roomName || "Untitled Room",
-    creator: socket.username
-  };
-  socket.join(roomId);
-  socket.emit('private room created', { roomId, name: privateRooms[roomId].name });
-const roomList = Object.entries(privateRooms).map(([roomId, room]) => ({
-  roomId,
-  name: room.name,
-  creator: room.creator
-}));
-io.emit('rooms update', roomList);
-  console.log(`${socket.username} created private room ${roomId} (${privateRooms[roomId].name})`);
-});
+  socket.on('create private room', ({ roomName, invites = [] }) => {
+    if (!socket.username) return;
+    const roomId = 'room_' + Math.random().toString(36).substr(2, 9);
+    privateRooms[roomId] = {
+      members: [socket.username],
+      invites: invites,
+      name: roomName || "Untitled Room",
+      creator: socket.username
+    };
+    socket.join(roomId);
+    socket.emit('private room created', { roomId, name: privateRooms[roomId].name });
+    // Notify invited users and update their room list
+    invites.forEach(invitedUser => {
+      for (let [id, s] of io.of('/').sockets) {
+        if (s.username === invitedUser) {
+          s.emit('private room invite', { roomId, name: privateRooms[roomId].name, from: socket.username });
+          sendUserRooms(s, invitedUser);
+        }
+      }
+    });
+    // Update room list for creator
+    sendUserRooms(socket, socket.username);
+    console.log(`${socket.username} created private room ${roomId} (${privateRooms[roomId].name})`);
+  });
 
 
   // Invite a user to a private room
@@ -107,14 +112,22 @@ io.emit('rooms update', roomList);
     console.log(`${socket.username} invited ${invitee} to room ${roomId}`);
   });
 
-  // Send current private room list to client
+  // Send only relevant private rooms to client
+  function sendUserRooms(socket, username) {
+    const userRooms = Object.entries(privateRooms)
+      .filter(([roomId, room]) =>
+        room.members.includes(username) || (room.invites && room.invites.includes(username))
+      )
+      .map(([roomId, room]) => ({
+        roomId,
+        name: room.name,
+        creator: room.creator
+      }));
+    socket.emit('rooms update', userRooms);
+  }
   socket.on('get rooms', () => {
-    const roomList = Object.entries(privateRooms).map(([roomId, room]) => ({
-      roomId,
-      name: room.name,
-      creator: room.creator
-    }));
-    socket.emit('rooms update', roomList);
+    if (!socket.username) return;
+    sendUserRooms(socket, socket.username);
   });
 
   // Accept invite to private room

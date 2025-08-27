@@ -15,6 +15,7 @@ export default function Home() {
   const [rooms, setRooms] = useState([]); // All chat rooms
   const [activeRoom, setActiveRoom] = useState(null); // Currently active room
   const [pendingRoomName, setPendingRoomName] = useState(null);
+  const [invitePopup, setInvitePopup] = useState(null); // For invite notification
 
   const handleLogout = () => {
     localStorage.removeItem("loggedIn");
@@ -53,6 +54,12 @@ export default function Home() {
         }
       }
     });
+    // Listen for private room invites
+    socketRef.current.on("private room invite", (invite) => {
+      setInvitePopup(invite);
+      // Auto-hide after 10 seconds
+      setTimeout(() => setInvitePopup(null), 10000);
+    });
     // Request user list and rooms on connect
     socketRef.current.emit("get users");
     socketRef.current.emit("get rooms");
@@ -89,6 +96,56 @@ export default function Home() {
 
   return (
     <div style={{ minHeight: "100vh", position: "relative", background: "#000000ff", display: "flex", flexDirection: "row", width: "100vw" }}>
+      {/* Invite popup notification */}
+      {invitePopup && (
+        <div style={{
+          position: "fixed",
+          bottom: 24,
+          right: 24,
+          background: "#222",
+          color: "#fff",
+          padding: "18px 32px",
+          borderRadius: 12,
+          boxShadow: "0 2px 12px rgba(0,0,0,0.18)",
+          zIndex: 1000,
+          minWidth: 260,
+          maxWidth: 340,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "flex-start"
+        }}>
+          <div style={{ fontWeight: "bold", marginBottom: 6 }}>
+            Private Chat Invitation
+          </div>
+          <div style={{ marginBottom: 8 }}>
+            <b>{invitePopup.from}</b> invited you to join <b>{invitePopup.name}</b>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              style={{ background: "#20ddff", color: "#000", border: "none", borderRadius: 8, padding: "6px 16px", fontWeight: "bold", cursor: "pointer" }}
+              onClick={() => {
+                if (socketRef.current) {
+                  socketRef.current.emit("accept invite", { roomId: invitePopup.roomId });
+                  setInvitePopup(null);
+                }
+              }}
+            >
+              Accept
+            </button>
+            <button
+              style={{ background: "#888", color: "#fff", border: "none", borderRadius: 8, padding: "6px 16px", fontWeight: "bold", cursor: "pointer" }}
+              onClick={() => {
+                if (socketRef.current) {
+                  socketRef.current.emit("decline invite", { roomId: invitePopup.roomId });
+                  setInvitePopup(null);
+                }
+              }}
+            >
+              Decline
+            </button>
+          </div>
+        </div>
+      )}
       {/* Chat UI improvements*/}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", padding: 0, margin: 0, minHeight: "100vh" }}>
         {/* Tabs above the chat UI box, no border here */}
