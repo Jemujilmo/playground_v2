@@ -1,3 +1,28 @@
+console.log("SERVER STARTED", { pid: process.pid, time: new Date().toISOString() });
+
+// Global uncaught exception handler
+process.on('uncaughtException', (err) => {
+  console.error('[DEBUG] Uncaught Exception:', err);
+});
+
+// Proxy to detect accidental deletion or re-initialization of privateRooms
+let _privateRooms = {};
+const privateRooms = new Proxy(_privateRooms, {
+  set(target, prop, value) {
+    if (prop === 'length' || prop === Symbol.iterator) return Reflect.set(target, prop, value);
+    if (prop in target && value === undefined) {
+      console.log('[DEBUG] privateRooms property deleted:', prop);
+    }
+    if (!(prop in target)) {
+      console.log('[DEBUG] privateRooms new property:', prop);
+    }
+    return Reflect.set(target, prop, value);
+  },
+  deleteProperty(target, prop) {
+    console.log('[DEBUG] privateRooms property deleted:', prop);
+    return Reflect.deleteProperty(target, prop);
+  }
+});
 // Basic socket.io server setup for chat
 const http = require('http');
 const { Server } = require('socket.io');
@@ -31,11 +56,15 @@ const userPings = new Map(); //username -> last ping timestamp
 //Handle socket.io connections
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
-  //Set username for this socket
-  socket.on('set username', (username) => {
-    socket.username = username;
-    console.log(`Socket ${socket.id} associated with username: ${username}`);
-  });
+  // Set username from handshake query
+  const handshakeUsername = socket.handshake.query?.username;
+  if (handshakeUsername) {
+    socket.username = handshakeUsername;
+    console.log(`[DEBUG] handshake username: Socket ${socket.id} associated with username: ${handshakeUsername}`);
+    // Print all connected usernames after setting
+    const connectedUsernames = Array.from(io.sockets.sockets.values()).map(s => s.username);
+    console.log(`[DEBUG] Connected usernames after handshake:`, connectedUsernames);
+  }
   //Send user list
   socket.on('get users', async () => {
     await db.read();
@@ -55,75 +84,145 @@ io.on('connection', (socket) => {
     console.log('User registered:', username);
     socket.emit('Register success', { username });
   });
+  // Per-socket room state
+  socket.currentRoom = null;
   socket.on('chat message', (msg) => {
-    //'user connected' message to all users in the current room
-    io.to(currentRoom).emit('chat message', msg);
-    //Store the message in the chat history
-    if (!chatHistory[currentRoom]) {
-      chatHistory[currentRoom] = [];
+    if (!socket.currentRoom) return;
+    const room = socket.currentRoom;
+    const socketsInRoom = Array.from(io.sockets.adapter.rooms.get(room) || []);
+    const usernamesInRoom = socketsInRoom.map(id => io.sockets.sockets.get(id)?.username).filter(Boolean);
+    console.log(`[DEBUG] chat message sent to room: ${room}, users:`, usernamesInRoom, 'msg:', msg);
+    io.to(room).emit('chat message', msg);
+    if (!chatHistory[room]) {
+      chatHistory[room] = [];
     }
-    chatHistory[currentRoom].push(msg);
+    chatHistory[room].push(msg);
   });
-// In-memory private room management
-const privateRooms = {}; // { roomId: { members: [username], invites: [username] } }
+  // Join room handler (per-socket)
+  socket.on('join room', (room) => {
+    if (socket.currentRoom) {
+      io.to(socket.currentRoom).emit('message', {
+        user: 'admin',
+        text: `${socket.username} has left the room.`
+      });
+      socket.leave(socket.currentRoom);
+    }
+    socket.currentRoom = room;
+    socket.join(room);
+    socket.emit('message', {
+      user: 'admin',
+      text: `${socket.username}, welcome to room ${room}.`
+    });
+    socket.to(room).emit('message', {
+      user: 'admin',
+      text: `${socket.username} has joined the room.`
+    });
+    if (chatHistory[room]) {
+      socket.emit('chat history', chatHistory[room]);
+    }
+  });
+
+// Persistent private room management using lowdb
+const { Low: LowRooms } = require('lowdb');
+const { JSONFile: JSONFileRooms } = require('lowdb/node');
+const roomsDB = new LowRooms(new JSONFileRooms('rooms.json'), { rooms: [] });
 const userInvites = {}; // { username: [roomId, ...] }
+
+async function getRooms() {
+  await roomsDB.read();
+  return roomsDB.data.rooms;
+}
+async function saveRooms(rooms) {
+  roomsDB.data.rooms = rooms;
+  await roomsDB.write();
+}
 
   // Create a private room
   socket.on('create private room', ({ roomName, invites = [] }) => {
     if (!socket.username) return;
-    const roomId = 'room_' + Math.random().toString(36).substr(2, 9);
-    privateRooms[roomId] = {
-      members: [socket.username],
-      invites: invites,
-      name: roomName || "Untitled Room",
-      creator: socket.username
-    };
-    socket.join(roomId);
-    socket.emit('private room created', { roomId, name: privateRooms[roomId].name });
-    // Notify invited users and update their room list
-    invites.forEach(invitedUser => {
-      for (let [id, s] of io.of('/').sockets) {
-        if (s.username === invitedUser) {
-          s.emit('private room invite', { roomId, name: privateRooms[roomId].name, from: socket.username });
-          sendUserRooms(s, invitedUser);
+    (async () => {
+      const rooms = await getRooms();
+      const roomId = 'room_' + Math.random().toString(36).substr(2, 9);
+      const newRoom = {
+        roomId,
+        members: [socket.username],
+        invites: invites,
+        name: roomName || "Untitled Room",
+        creator: socket.username
+      };
+      rooms.push(newRoom);
+      await saveRooms(rooms);
+      console.log(`[DEBUG] Private room created:`, newRoom);
+      socket.join(roomId);
+      socket.emit('private room created', { roomId, name: newRoom.name });
+      // Notify invited users and update their room list
+      invites.forEach(invitedUser => {
+        for (let [id, s] of io.of('/').sockets) {
+          if (s.username === invitedUser) {
+            s.emit('private room invite', { roomId, name: newRoom.name, from: socket.username });
+            sendUserRooms(s, invitedUser);
+            console.log(`[DEBUG] Sent private room invite:`, { roomId, to: invitedUser, from: socket.username });
+          }
         }
-      }
-    });
-    // Update room list for creator
-    sendUserRooms(socket, socket.username);
-    console.log(`${socket.username} created private room ${roomId} (${privateRooms[roomId].name})`);
+      });
+      // Update room list for creator
+      sendUserRooms(socket, socket.username);
+      console.log(`[DEBUG] sendUserRooms called for creator ${socket.username}`);
+      console.log(`${socket.username} created private room ${roomId} (${newRoom.name})`);
+    })();
   });
 
 
   // Invite a user to a private room
   socket.on('invite to room', ({ roomId, invitee }) => {
-    if (!privateRooms[roomId] || !socket.username) return;
-    if (!privateRooms[roomId].members.includes(socket.username)) return;
-    if (privateRooms[roomId].invites.includes(invitee)) return;
-    privateRooms[roomId].invites.push(invitee);
-    if (!userInvites[invitee]) userInvites[invitee] = [];
-    userInvites[invitee].push(roomId);
-    // Find all sockets for the invitee and send invite
-    for (const [id, s] of Object.entries(io.sockets.sockets)) {
-      if (s.username === invitee) {
-        s.emit('private room invite', { roomId, from: socket.username });
+    (async () => {
+      const rooms = await getRooms();
+      const room = rooms.find(r => r.roomId === roomId);
+      if (!room || !socket.username) return;
+      if (!room.members.includes(socket.username)) return;
+      if (!room.invites.includes(invitee)) {
+        room.invites.push(invitee);
+        await saveRooms(rooms);
+        console.log('[DEBUG] After push, invites for room', roomId, room.invites);
       }
-    }
-    console.log(`${socket.username} invited ${invitee} to room ${roomId}`);
+      if (!userInvites[invitee]) userInvites[invitee] = [];
+      userInvites[invitee].push(roomId);
+      // Find all sockets for the invitee and send invite
+      let found = false;
+      for (const s of Array.from(io.sockets.sockets.values())) {
+        if (s.username === invitee) {
+          found = true;
+          console.log(`[DEBUG] Sending private room invite to socket ${s.id} for user ${invitee}`);
+          s.emit('private room invite', {
+            roomId,
+            name: room?.name || "Untitled Room",
+            from: socket.username
+          });
+        }
+      }
+      if (!found) {
+        console.log(`[DEBUG] No socket found for invitee username: ${invitee}`);
+      }
+      console.log(`${socket.username} invited ${invitee} to room ${roomId}`);
+    })();
   });
 
   // Send only relevant private rooms to client
   function sendUserRooms(socket, username) {
-    const userRooms = Object.entries(privateRooms)
-      .filter(([roomId, room]) =>
-        room.members.includes(username) || (room.invites && room.invites.includes(username))
-      )
-      .map(([roomId, room]) => ({
-        roomId,
-        name: room.name,
-        creator: room.creator
-      }));
-    socket.emit('rooms update', userRooms);
+    (async () => {
+      const rooms = await getRooms();
+      const userRooms = rooms
+        .filter(room =>
+          room.members.includes(username) || (room.invites && room.invites.includes(username))
+        )
+        .map(room => ({
+          roomId: room.roomId,
+          name: room.name,
+          creator: room.creator
+        }));
+      console.log(`[DEBUG] sendUserRooms for ${username}:`, userRooms);
+      socket.emit('rooms update', userRooms);
+    })();
   }
   socket.on('get rooms', () => {
     if (!socket.username) return;
@@ -132,18 +231,49 @@ const userInvites = {}; // { username: [roomId, ...] }
 
   // Accept invite to private room
   socket.on('accept invite', ({ roomId }) => {
-    if (!privateRooms[roomId] || !socket.username) return;
-    if (!privateRooms[roomId].invites.includes(socket.username)) return;
-    privateRooms[roomId].invites = privateRooms[roomId].invites.filter(u => u !== socket.username);
-    privateRooms[roomId].members.push(socket.username);
-    socket.join(roomId);
-    // Remove invite from userInvites
-    if (userInvites[socket.username]) {
-      userInvites[socket.username] = userInvites[socket.username].filter(r => r !== roomId);
-    }
-    // Notify all members
-    io.to(roomId).emit('private room joined', { roomId, username: socket.username });
-    console.log(`${socket.username} joined private room ${roomId}`);
+  socket.currentRoom = roomId;
+    (async () => {
+      const rooms = await getRooms();
+      const room = rooms.find(r => r.roomId === roomId);
+      console.log('[DEBUG] accept invite event received:', { roomId, username: socket.username });
+      if (!room) {
+        console.log('[DEBUG] accept invite: room does not exist', { roomId, username: socket.username });
+        return;
+      }
+      if (!socket.username) {
+        console.log('[DEBUG] accept invite: socket.username missing', { roomId, socketId: socket.id });
+        return;
+      }
+      if (!room.invites.includes(socket.username)) {
+        console.log('[DEBUG] accept invite: user not in invites', { roomId, username: socket.username, invites: room.invites });
+        return;
+      }
+      room.invites = room.invites.filter(u => u !== socket.username);
+      room.members.push(socket.username);
+      await saveRooms(rooms);
+      socket.join(roomId);
+      // Remove invite from userInvites
+      if (userInvites[socket.username]) {
+        userInvites[socket.username] = userInvites[socket.username].filter(r => r !== roomId);
+      }
+      // Notify all members
+      io.to(roomId).emit('private room joined', { roomId, username: socket.username });
+      // Send updated room list to all current members of the room
+      const members = room.members;
+      const allSockets = Array.from(io.sockets.sockets.values());
+      for (const s of allSockets) {
+        if (s.username && members.includes(s.username)) {
+          sendUserRooms(s, s.username);
+        }
+      }
+      console.log(`[DEBUG] accept invite:`, {
+        roomId,
+        username: socket.username,
+        currentMembers: room.members,
+        currentInvites: room.invites
+      });
+      console.log(`${socket.username} joined private room ${roomId}`);
+    })();
   });
 
   // Decline invite
@@ -159,22 +289,25 @@ const userInvites = {}; // { username: [roomId, ...] }
 
   // Leave private room
   socket.on('leave private room', ({ roomId }) => {
-    if (!privateRooms[roomId] || !socket.username) return;
-    privateRooms[roomId].members = privateRooms[roomId].members.filter(u => u !== socket.username);
-    socket.leave(roomId);
-    io.to(roomId).emit('private room left', { roomId, username: socket.username });
-    // Clean up room if empty
-    if (privateRooms[roomId].members.length === 0) {
-      delete privateRooms[roomId];
-    }
-    // Emit updated room list to all clients
-    const roomList = Object.entries(privateRooms).map(([roomId, room]) => ({
-      roomId,
-      name: room.name,
-      creator: room.creator
-    }));
-    io.emit('rooms update', roomList);
-    console.log(`${socket.username} left private room ${roomId}`);
+    (async () => {
+      const rooms = await getRooms();
+      const room = rooms.find(r => r.roomId === roomId);
+      if (!room || !socket.username) return;
+      room.members = room.members.filter(u => u !== socket.username);
+      socket.leave(roomId);
+      io.to(roomId).emit('private room left', { roomId, username: socket.username });
+      // Clean up room if empty
+      if (room.members.length === 0) {
+        const idx = rooms.findIndex(r => r.roomId === roomId);
+        if (idx !== -1) rooms.splice(idx, 1);
+      }
+      await saveRooms(rooms);
+      // Emit updated room list to all clients
+      for (const s of Array.from(io.sockets.sockets.values())) {
+        if (s.username) sendUserRooms(s, s.username);
+      }
+      console.log(`${socket.username} left private room ${roomId}`);
+    })();
   });
 
   // Edit private room name
@@ -210,8 +343,8 @@ const userInvites = {}; // { username: [roomId, ...] }
     } else {
       console.log('User disconnected:', socket.id);
     }
-    if (typeof currentRoom !== 'undefined' && currentRoom) {
-      io.to(currentRoom).emit('message', {
+    if (typeof socket.currentRoom !== 'undefined' && socket.currentRoom) {
+      io.to(socket.currentRoom).emit('message', {
         user: 'admin',
         text: `${socket.username || socket.id} has disconnected.`
       });
@@ -236,38 +369,7 @@ const userInvites = {}; // { username: [roomId, ...] }
     socket.emit('login success', { username });
   });
 
-  //Room and chat logic
-  let currentRoom = null;
-
-    socket.on('join room', (room) => {
-  if (currentRoom) {
-    //Notify room that user left
-    io.to(currentRoom).emit('message', {
-      user: 'admin',
-      text: `${socket.username} has left the room.`
-    });
-    socket.leave(currentRoom);
-  }
-  currentRoom = room;
-  socket.join(room);
-
-  //Welcome to the user
-  socket.emit('message', {
-    user: 'admin',
-    text: `${socket.username}, welcome to room ${room}.`
-  });
-
-  //Public join message to the room
-  socket.to(room).emit('message', {
-    user: 'admin',
-    text: `${socket.username} has joined the room.`
-  });
-
-  //Send chat history to the user when they join a room
-  if (chatHistory[room]) {
-    socket.emit('chat history', chatHistory[room]);
-  }
-});
+  // ...existing code...
   // Classic ping system for online status
   socket.on('ping', async ({ username }) => {
     if (!username) return;
@@ -284,8 +386,8 @@ const userInvites = {}; // { username: [roomId, ...] }
 
 //Start the server
 const PORT = 3001;
-server.listen(PORT, () => {
-  console.log(`Socket.io server running on port ${PORT}`);
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`Socket.io server running on port ${PORT} (bound to 0.0.0.0)`);
 });
 setInterval(async () => {
   await db.read();

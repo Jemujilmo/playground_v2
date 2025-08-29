@@ -8,7 +8,8 @@ import { io } from "socket.io-client";
 export default function Home() {
   const router = useRouter();
   const socketRef = useRef(null);
-  const [messages, setMessages] = useState([]);
+  // Store messages per room: { [roomId]: [msg, ...] }
+  const [messagesByRoom, setMessagesByRoom] = useState({});
   const [input, setInput] = useState("");
   const [username, setUsername] = useState("");
   const [users, setUsers] = useState([]); // All users with status
@@ -31,40 +32,59 @@ export default function Home() {
       return;
     }
     setUsername(storedUsername || "");
-    socketRef.current = io("http://localhost:3001");
-    // Tell backend who this socket is
-    if (storedUsername) {
-      socketRef.current.emit("set username", storedUsername);
-    }
-    socketRef.current.on("chat message", (msg) => {
-      setMessages((prev) => [...prev, msg]);
-    });
-    // Listen for user status updates
-    socketRef.current.on("user status update", (userList) => {
-      setUsers(userList);
-    });
-    // Listen for rooms update
-    socketRef.current.on("rooms update", (roomList) => {
-      setRooms(roomList);
-      if (pendingRoomName) {
-        const newRoom = roomList.find(r => r.name === pendingRoomName);
-        if (newRoom) {
-          setActiveRoom(newRoom.roomId);
-          setPendingRoomName(null);
+    // Only create socket if not already created
+    if (!socketRef.current) {
+      socketRef.current = io("http://localhost:3001", {
+        query: { username: storedUsername }
+      });
+      // Store messages per room or home
+      socketRef.current.on("chat message", (msg) => {
+        setMessagesByRoom((prev) => {
+          const roomId = msg.roomId || "home";
+          return {
+            ...prev,
+            [roomId]: [...(prev[roomId] || []), msg]
+          };
+        });
+      });
+      socketRef.current.on("chat history", (history) => {
+        setMessagesByRoom((prev) => ({
+          ...prev,
+          [activeRoom || "home"]: history || []
+        }));
+      });
+      socketRef.current.on("user status update", (userList) => {
+        setUsers(userList);
+      });
+      socketRef.current.on("rooms update", (roomList) => {
+        setRooms(roomList);
+        if (pendingRoomName) {
+          const newRoom = roomList.find(r => r.name === pendingRoomName);
+          if (newRoom) {
+            setActiveRoom(newRoom.roomId);
+            setPendingRoomName(null);
+          }
         }
-      }
-    });
-    // Listen for private room invites
-    socketRef.current.on("private room invite", (invite) => {
-      setInvitePopup(invite);
-      // Auto-hide after 10 seconds
-      setTimeout(() => setInvitePopup(null), 10000);
-    });
-    // Request user list and rooms on connect
-    socketRef.current.emit("get users");
-    socketRef.current.emit("get rooms");
+      });
+      socketRef.current.on("private room invite", (invite) => {
+        console.log("[DEBUG] Received private room invite:", invite);
+        setInvitePopup(invite);
+        setTimeout(() => setInvitePopup(null), 10000);
+      });
+      socketRef.current.on("private room joined", ({ roomId, username: joinedUser }) => {
+        if (joinedUser === storedUsername) {
+          setActiveRoom(roomId);
+        }
+      });
+      socketRef.current.emit("get users");
+      socketRef.current.emit("get rooms");
+      socketRef.current.emit("join room", "home");
+    }
     return () => {
-      socketRef.current.disconnect();
+      if (socketRef.current) {
+        socketRef.current.disconnect();
+        socketRef.current = null;
+      }
     };
   }, [router]);
 
@@ -81,11 +101,11 @@ export default function Home() {
     if (input.trim() && socketRef.current) {
       const msg = { user: username || "Anonymous", text: input, roomId: activeRoom };
       socketRef.current.emit("chat message", msg);
-      setMessages((prev) => [...prev, msg]); //updates chat
       setInput("");
     }
   };
 
+  // Clear messages when switching rooms
   const handleCreateRoomClick = () => {
     const roomName = prompt("Enter room name:");
     if (roomName && socketRef.current) {
@@ -125,8 +145,12 @@ export default function Home() {
               style={{ background: "#20ddff", color: "#000", border: "none", borderRadius: 8, padding: "6px 16px", fontWeight: "bold", cursor: "pointer" }}
               onClick={() => {
                 if (socketRef.current) {
+                  console.log("[DEBUG] Accept clicked, emitting 'accept invite'", { roomId: invitePopup.roomId });
+                  console.log("[DEBUG] socketRef.current.connected:", socketRef.current.connected);
                   socketRef.current.emit("accept invite", { roomId: invitePopup.roomId });
                   setInvitePopup(null);
+                } else {
+                  console.log("[DEBUG] Accept clicked but socketRef.current is null");
                 }
               }}
             >
@@ -168,7 +192,12 @@ export default function Home() {
           {/* Home tab always first */}
           <div
             key="home"
-            onClick={() => setActiveRoom(null)}
+            onClick={() => {
+              setActiveRoom(null);
+              if (socketRef.current) {
+                socketRef.current.emit("join room", "home");
+              }
+            }}
             style={{
               padding: "10px 24px",
               cursor: "pointer",
@@ -195,7 +224,12 @@ export default function Home() {
               }}
             >
               <div
-                onClick={() => setActiveRoom(room.roomId)}
+                onClick={() => {
+                  setActiveRoom(room.roomId);
+                  if (socketRef.current) {
+                    socketRef.current.emit("join room", room.roomId);
+                  }
+                }}
                 style={{
                   padding: "10px 24px 10px 24px",
                   cursor: "pointer",
@@ -219,6 +253,12 @@ export default function Home() {
                     socketRef.current.emit("leave private room", { roomId: room.roomId });
                   }
                   setRooms((prev) => prev.filter(r => r.roomId !== room.roomId));
+                  // Remove only this room's messages
+                  setMessagesByRoom(prev => {
+                    const copy = { ...prev };
+                    delete copy[room.roomId];
+                    return copy;
+                  });
                   if (activeRoom === room.roomId) {
                     setActiveRoom(null);
                   }
@@ -292,16 +332,14 @@ export default function Home() {
             padding: 10,
             background: "#ffffffff"
           }}>
-            {messages.length === 0 ? (
+            {(messagesByRoom[activeRoom || "home"]?.length ?? 0) === 0 ? (
               <div style={{ color: "#000000ff" }}>No messages yet.</div>
             ) : (
-              messages
-                .filter(msg => (activeRoom === null ? !msg.roomId : msg.roomId === activeRoom))
-                .map((msg, idx) => (
-                  <div key={idx} style={{ marginBottom: 6, color: "#000000ff" }}>
-                    <b>{msg.user}:</b> {msg.text}
-                  </div>
-                ))
+              messagesByRoom[activeRoom || "home"]?.map((msg, idx) => (
+                <div key={idx} style={{ marginBottom: 6, color: "#000000ff" }}>
+                  <b>{msg.user}:</b> {msg.text}
+                </div>
+              ))
             )}
           </div>
           <form onSubmit={handleSend} style={{ display: "flex", gap: 8 }}>
