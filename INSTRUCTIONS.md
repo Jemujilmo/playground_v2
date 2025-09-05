@@ -8,6 +8,9 @@ ___
 _challenge: see if you can allow users to create rooms after the initial requirements are completed. dynamic rooms will be more difficult than a static amount of rooms_
 ___
 
+09/04/2025
+Next.js + Socket.io + Prisma/SQLite
+
 To facilitate sending messages between users, you will use a websocket to enable fast, real-time communication. If you are unaware of what websockets are, please read [here](https://www.geeksforgeeks.org/web-tech/what-is-web-socket-and-how-it-is-different-from-the-http/) for more information.
 
 The websocket should only send messages to users for the room the user is currently in. Any spill over could potentially be a security risk.

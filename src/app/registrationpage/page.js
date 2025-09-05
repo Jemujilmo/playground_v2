@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 export default function Home() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [email, setEmail] = useState("");
   const socketRef = useRef(null);
   const router = useRouter();
 
@@ -17,21 +18,21 @@ export default function Home() {
     };
   }, []);
 
-useEffect(() => {
-  if (!socketRef.current) return;
-  socketRef.current.on("register success", () => {
-    localStorage.setItem("loggedIn", "true");
-    localStorage.setItem("username", username);
-    router.push("/");
-  });
-  return () => {
-    socketRef.current.off("register success");
-  };
-}, [router, username]);
+  useEffect(() => {
+    if (!socketRef.current) return;
+    socketRef.current.on("register success", () => {
+      localStorage.setItem("loggedIn", "true");
+      localStorage.setItem("username", username);
+      router.push("/");
+    });
+    return () => {
+      socketRef.current.off("register success");
+    };
+  }, [router, username]);
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    socketRef.current.emit("register", { username, password });
+    socketRef.current.emit("register", { username, password, email });
   };
 // This is the registration section where you enter credentials
   return (
@@ -79,6 +80,13 @@ useEffect(() => {
             placeholder="Password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
+            style={{ padding: 12, borderRadius: 8, border: "1px solid #ccc", fontSize: 16 }}
+          />
+          <input
+            type="email"
+            placeholder="Email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
             style={{ padding: 12, borderRadius: 8, border: "1px solid #ccc", fontSize: 16 }}
           />
           <button type="submit" style={{
