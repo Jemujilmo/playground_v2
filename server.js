@@ -6,7 +6,10 @@ const bcrypt = require('bcryptjs');
 const validator = require('validator');
 const { RateLimiterMemory } = require('rate-limiter-flexible');
 
-const server = http.createServer();
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('OK');
+});
 const io = new Server(server, {
   cors: {
     origin: '*',
