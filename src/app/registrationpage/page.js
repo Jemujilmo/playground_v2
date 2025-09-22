@@ -11,7 +11,7 @@ export default function Home() {
   const router = useRouter();
 
   useEffect(() => {
-    socketRef.current = io("http://localhost:3001");
+    socketRef.current = io(process.env.NEXT_PUBLIC_SOCKET_URL);
     return () => {
       socketRef.current.disconnect();
     };
