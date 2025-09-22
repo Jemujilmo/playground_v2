@@ -35,7 +35,7 @@ export default function Home() {
     setUsername(storedUsername || "");
     // Only create socket if not already created
     if (!socketRef.current) {
-      socketRef.current = io("http://localhost:3001", {
+      socketRef.current = io(process.env.NEXT_PUBLIC_SOCKET_URL, {
         query: { username: storedUsername }
       });
       // Store messages per room or home
