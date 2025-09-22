@@ -23,42 +23,58 @@ const loginLimiter = new RateLimiterMemory({
   points: 5, // 5 attempts
   duration: 60, // per 60 seconds per IP
 });
+const userSockets = new Map();
 
-io.on('connection', (socket) => {
+io.on('connection', async (socket) => {
   const handshakeUsername = socket.handshake.query?.username;
   if (handshakeUsername) {
     socket.username = handshakeUsername;
+    // Look up userId from the database
+    const user = await prisma.user.findUnique({ where: { username: handshakeUsername } });
+    if (user) {
+      socket.userId = user.id;
+    }
   }
 
   socket.currentRoom = null;
 
+  // Track sockets per user
+  if (socket.username) {
+    if (!userSockets.has(socket.username)) userSockets.set(socket.username, new Set());
+    userSockets.get(socket.username).add(socket.id);
+  }
+
   // --- Registration ---
-  socket.on('register', async ({ username, password, email }) => {
+  socket.on('register', async ({ username, password }) => {
+    console.log("Received register:", username, password);
     try {
       await registrationLimiter.consume(socket.handshake.address);
       if (
         !username ||
         !password ||
-        !email ||
         !validator.isAlphanumeric(username) ||
         !validator.isLength(username, { min: 3, max: 20 }) ||
-        !validator.isEmail(email) ||
         !validator.isLength(password, { min: 6, max: 100 })
       ) {
         socket.emit('register error', { message: 'Invalid input.' });
         return;
       }
-      const existing = await prisma.user.findFirst({
-        where: { OR: [{ username }, { email }] }
-      });
+      const existing = await prisma.user.findUnique({ where: { username } });
       if (existing) {
-        socket.emit('register error', { message: 'Username or email already exists' });
+        socket.emit('register error', { message: 'Username already exists' });
         return;
       }
       const hashedPassword = await bcrypt.hash(password, 10);
       await prisma.user.create({
-        data: { username, email, password: hashedPassword }
+        data: { username, password: hashedPassword }
       });
+      const homeRoom = await prisma.room.findUnique({ where: { name: "Home" } });
+      if (homeRoom) {
+        await prisma.room.update({
+          where: { id: homeRoom.id },
+          data: { members: { connect: { username } } }
+        });
+      }
       socket.emit('register success', { username });
     } catch (rejRes) {
       socket.emit('register error', { message: 'Too many registration attempts. Please wait.' });
@@ -91,6 +107,18 @@ io.on('connection', (socket) => {
       socket.username = username;
       socket.userId = user.id;
       socket.emit('login success', { username });
+      await prisma.user.update({
+        where: { username },
+        data: { status: "online" }
+      });
+      const homeRoom = await prisma.room.findUnique({ where: { name: "Home" }, include: { members: true } });
+      if (homeRoom && !homeRoom.members.some(u => u.username === username)) {
+        await prisma.room.update({
+          where: { id: homeRoom.id },
+          data: { members: { connect: { username } } }
+        });
+      }
+      broadcastUserStatus();
     } catch (rejRes) {
       socket.emit('login error', { message: 'Too many login attempts. Please wait.' });
     }
@@ -98,29 +126,42 @@ io.on('connection', (socket) => {
 
   // --- Create Private Room ---
   socket.on('create private room', async ({ roomName, invites = [] }) => {
-    if (!socket.userId) return;
-    // Create the room with the creator as a member
-    const room = await prisma.room.create({
-      data: {
-        name: roomName || "Untitled Room",
-        creator: { connect: { id: socket.userId } },
-        members: { connect: [{ id: socket.userId }] }
-      }
-    });
-    // Notify invited users
-    for (const invitee of invites) {
-      const user = await prisma.user.findUnique({ where: { username: invitee } });
-      if (user) {
-        for (const s of Array.from(io.sockets.sockets.values())) {
-          if (s.username === invitee) {
-            s.emit('private room invite', { roomId: room.id, name: room.name, from: socket.username });
+    console.log("create private room event received", roomName, invites, socket.userId);
+    if (!socket.userId) {
+      console.log("No userId on socket, cannot create room.");
+      return;
+    }
+    try {
+      const room = await prisma.room.create({
+        data: {
+          name: roomName || "Untitled Room",
+          creator: { connect: { id: socket.userId } },
+          members: { connect: [{ id: socket.userId }] }
+        }
+      });
+      console.log("Room created:", room);
+
+      // Notify invited users (optional, keep as you had)
+      for (const invitee of invites) {
+        const user = await prisma.user.findUnique({ where: { username: invitee } });
+        if (user) {
+          for (const s of Array.from(io.sockets.sockets.values())) {
+            if (s.username === invitee) {
+              s.emit('private room invite', { roomId: room.id, name: room.name, from: socket.username });
+            }
           }
         }
       }
+      socket.join(room.id.toString());
+      socket.emit('private room created', { roomId: room.id, name: room.name });
+
+      // Send only this user's rooms (private rooms should only be visible to members)
+      sendUserRooms(socket, socket.username);
+
+    } catch (err) {
+      console.error("Error creating private room:", err);
+      socket.emit('create room error', { message: 'Failed to create room.' });
     }
-    socket.join(room.id.toString());
-    socket.emit('private room created', { roomId: room.id, name: room.name });
-    sendUserRooms(socket, socket.username);
   });
 
   // --- Invite to Room (with persistence) ---
@@ -138,6 +179,7 @@ io.on('connection', (socket) => {
     const roomObj = await prisma.room.findUnique({ where: { id: parseInt(roomId) } });
     for (const s of Array.from(io.sockets.sockets.values())) {
       if (s.username === invitee) {
+        console.log(`Emitting private room invite to ${invitee} for room ${roomObj?.name}`);
         s.emit('private room invite', { roomId, name: roomObj?.name || '', from: socket.username });
       }
     }
@@ -230,32 +272,36 @@ io.on('connection', (socket) => {
   async function sendUserRooms(socket, username) {
     const user = await prisma.user.findUnique({
       where: { username },
-      include: { rooms: true }
+      include: { rooms: { include: { creator: true } } }
     });
     if (!user) return;
     const userRooms = user.rooms.map(room => ({
       roomId: room.id,
       name: room.name,
-      creator: room.creatorId
+      creator: room.creator.username // <-- Now this is the username!
     }));
     socket.emit('rooms update', userRooms);
   }
 
   // --- Chat Message ---
   socket.on('chat message', async (msg) => {
+    console.log("chat message event received", msg);
+    console.log("currentRoom", socket.currentRoom, "userId", socket.userId);
     if (!socket.currentRoom || !socket.userId) return;
-    const message = await prisma.message.create({
+    console.log(`[SERVER] Received chat message:`, msg);
+    // Save message to DB
+    await prisma.message.create({
       data: {
         text: msg.text,
-        user: { connect: { id: socket.userId } },
-        room: { connect: { id: parseInt(socket.currentRoom) } }
+        room: { connect: { id: parseInt(socket.currentRoom) } },
+        user: { connect: { id: socket.userId } }
       }
     });
-    io.to(socket.currentRoom).emit('chat message', {
+    // Optionally, emit the message to the room
+    io.to(socket.currentRoom.toString()).emit("chat message", {
       user: socket.username,
       text: msg.text,
-      roomId: socket.currentRoom,
-      createdAt: message.createdAt
+      roomId: socket.currentRoom
     });
   });
 
@@ -263,26 +309,39 @@ io.on('connection', (socket) => {
   socket.on('join room', async (roomId) => {
     socket.currentRoom = roomId;
     socket.join(roomId.toString());
+    // Fetch all messages for this room from the database
     const messages = await prisma.message.findMany({
       where: { roomId: parseInt(roomId) },
-      orderBy: { createdAt: 'asc' },
+      orderBy: { createdAt: "asc" },
       include: { user: true }
     });
-    socket.emit('chat history', messages.map(m => ({
-      user: m.user.username,
-      text: m.text,
-      roomId: m.roomId,
-      createdAt: m.createdAt
-    })));
+    socket.emit('chat history', {
+      roomId: parseInt(roomId),
+      messages: messages.map(m => ({
+        user: m.user.username,
+        text: m.text,
+        roomId: m.roomId,
+        createdAt: m.createdAt
+      }))
+    });
   });
 
   // --- Disconnect ---
   socket.on('disconnect', async () => {
     if (socket.username) {
-      await prisma.user.update({
-        where: { username: socket.username },
-        data: { status: "offline" }
-      });
+      // Remove this socket from the user's set
+      const set = userSockets.get(socket.username);
+      if (set) {
+        set.delete(socket.id);
+        if (set.size === 0) {
+          // Only set offline if no sockets remain
+          await prisma.user.update({
+            where: { username: socket.username },
+            data: { status: "offline" }
+          });
+          broadcastUserStatus();
+        }
+      }
     }
     if (socket.currentRoom) {
       io.to(socket.currentRoom).emit('message', {
@@ -300,8 +359,47 @@ io.on('connection', (socket) => {
       where: { username },
       data: { status: "online" }
     });
+    broadcastUserStatus();
   });
-});
+
+  // Make sure at least one user exists to be the creator
+  let creator = await prisma.user.findFirst();
+  if (!creator) {
+    creator = await prisma.user.create({
+      data: { username: "admin", password: await bcrypt.hash("adminpass", 10) }
+    });
+  }
+}); // <-- This closes the io.on('connection') block
+
+// Place broadcastUserStatus here, outside the connection handler:
+async function broadcastUserStatus() {
+  const users = await prisma.user.findMany();
+  io.emit("user status update", users.map(u => ({
+    username: u.username,
+    status: u.status || "offline"
+  })));
+}
+
+// On server start, ensure a Home room exists
+async function ensureHomeRoom() {
+  let creator = await prisma.user.findFirst();
+  if (!creator) {
+    creator = await prisma.user.create({
+      data: { username: "admin", password: await bcrypt.hash("adminpass", 10) }
+    });
+  }
+  let homeRoom = await prisma.room.findUnique({ where: { name: "Home" } });
+  if (!homeRoom) {
+    homeRoom = await prisma.room.create({
+      data: {
+        name: "Home",
+        creator: { connect: { id: creator.id } },
+        members: { connect: { id: creator.id } }
+      }
+    });
+  }
+}
+ensureHomeRoom();
 
 // Start the server, listening on all network interfaces
 const PORT = 3001;

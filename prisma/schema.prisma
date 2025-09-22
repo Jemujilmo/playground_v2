@@ -14,24 +14,20 @@ datasource db {
 }
 
 model User {
-  id                Int      @id @default(autoincrement())
-  username          String   @unique
-  email             String   @unique
-  password          String
-  emailVerified      Boolean @default(false)
-  verificationToken  String?
-  resetToken         String?
-  resetTokenExpiry   DateTime?
-  rooms             Room[]   @relation("UserRooms")
-  messages          Message[]
-  createdRooms      Room[]   @relation("RoomCreator")
-  invites           Invite[] @relation("UserInvites")
-  sentInvites       Invite[] @relation("InviteFrom")
+  id           Int      @id @default(autoincrement())
+  username     String   @unique
+  password     String
+  rooms        Room[]   @relation("UserRooms")
+  messages     Message[]
+  createdRooms Room[]   @relation("RoomCreator")
+  invites      Invite[] @relation("UserInvites")
+  sentInvites  Invite[] @relation("InviteFrom")
+  status       String?
 }
 
 model Room {
   id        Int      @id @default(autoincrement())
-  name      String
+  name      String   @unique
   creator   User     @relation("RoomCreator", fields: [creatorId], references: [id])
   creatorId Int
   members   User[]   @relation("UserRooms")

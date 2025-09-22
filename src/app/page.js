@@ -14,7 +14,8 @@ export default function Home() {
   const [username, setUsername] = useState("");
   const [users, setUsers] = useState([]); // All users with status
   const [rooms, setRooms] = useState([]); // All chat rooms
-  const [activeRoom, setActiveRoom] = useState(null); // Currently active room
+  const [activeRoom, setActiveRoom] = useState(null);
+  const [globalRoomId, setGlobalRoomId] = useState(null);
   const [pendingRoomName, setPendingRoomName] = useState(null);
   const [invitePopup, setInvitePopup] = useState(null); // For invite notification
 
@@ -39,31 +40,33 @@ export default function Home() {
       });
       // Store messages per room or home
       socketRef.current.on("chat message", (msg) => {
+        console.log("Received chat message:", msg);
         setMessagesByRoom((prev) => {
-          const roomId = msg.roomId || "home";
+          const roomId = msg.roomId;
           return {
             ...prev,
             [roomId]: [...(prev[roomId] || []), msg]
           };
         });
       });
-      socketRef.current.on("chat history", (history) => {
+      socketRef.current.on("chat history", ({ roomId, messages }) => {
         setMessagesByRoom((prev) => ({
           ...prev,
-          [activeRoom || "home"]: history || []
+          [roomId]: messages || []
         }));
       });
       socketRef.current.on("user status update", (userList) => {
+        console.log("user status update", userList); // <--- This will print to your browser's DevTools console
         setUsers(userList);
       });
       socketRef.current.on("rooms update", (roomList) => {
         setRooms(roomList);
-        if (pendingRoomName) {
-          const newRoom = roomList.find(r => r.name === pendingRoomName);
-          if (newRoom) {
-            setActiveRoom(newRoom.roomId);
-            setPendingRoomName(null);
-          }
+        // Find the global room and set its ID
+        const homeRoom = roomList.find(r => r.name === "Home");
+        if (homeRoom) {
+          setGlobalRoomId(homeRoom.roomId);
+          // If no room is active, set Home as the active room
+          setActiveRoom(prev => prev === null ? homeRoom.roomId : prev);
         }
       });
       socketRef.current.on("private room invite", (invite) => {
@@ -76,9 +79,9 @@ export default function Home() {
           setActiveRoom(roomId);
         }
       });
+      
       socketRef.current.emit("get users");
       socketRef.current.emit("get rooms");
-      socketRef.current.emit("join room", "home");
     }
     return () => {
       if (socketRef.current) {
@@ -86,7 +89,7 @@ export default function Home() {
         socketRef.current = null;
       }
     };
-  }, [router]);
+  }, []); // <--- Only on mount/unmount
 
   useEffect(() => {
     if (!socketRef.current || !username) return;
@@ -98,9 +101,13 @@ export default function Home() {
 
   const handleSend = (e) => {
     e.preventDefault();
-    if (input.trim() && socketRef.current) {
-      const msg = { user: username || "Anonymous", text: input, roomId: activeRoom };
-      socketRef.current.emit("chat message", msg);
+    if (input.trim() && socketRef.current && activeRoom !== null) {
+      const msg = { user: username, text: input, roomId: activeRoom }; // Numeric ID
+      socketRef.current.emit("chat message", {
+        text: input,
+        user: username,
+        roomId: activeRoom
+      });
       setInput("");
     }
   };
@@ -113,6 +120,12 @@ export default function Home() {
       socketRef.current.emit("create private room", { roomName });
     }
   };
+
+  useEffect(() => {
+    if (socketRef.current && activeRoom !== null) {
+      socketRef.current.emit("join room", activeRoom);
+    }
+  }, [activeRoom]);
 
   return (
     <div style={{ minHeight: "100vh", position: "relative", background: "#000000ff", display: "flex", flexDirection: "row", width: "100vw" }}>
@@ -189,31 +202,27 @@ export default function Home() {
             borderTopRightRadius: 8,
             width: "fit-content"
           }}>
-          {/* Home tab always first */}
+          {/* Home tab always first and not closeable */}
           <div
             key="home"
-            onClick={() => {
-              setActiveRoom(null);
-              if (socketRef.current) {
-                socketRef.current.emit("join room", "home");
-              }
-            }}
+            onClick={() => setActiveRoom(globalRoomId)}
             style={{
               padding: "10px 24px",
               cursor: "pointer",
-              background: activeRoom === null ? "#fff" : "#333",
-              color: activeRoom === null ? "#222" : "#fff",
+              background: activeRoom === globalRoomId ? "#fff" : "#333",
+              color: activeRoom === globalRoomId ? "#222" : "#fff",
               borderTopLeftRadius: 8,
               borderTopRightRadius: 8,
               marginRight: 4,
-              border: activeRoom === null ? "2px solid #fff" : "2px solid transparent",
-              borderBottom: activeRoom === null ? "none" : "2px solid #333",
-              fontWeight: activeRoom === null ? "bold" : "normal"
+              border: activeRoom === globalRoomId ? "2px solid #fff" : "2px solid transparent",
+              borderBottom: activeRoom === globalRoomId ? "none" : "2px solid #333",
+              fontWeight: activeRoom === globalRoomId ? "bold" : "normal"
             }}
           >
             Home
           </div>
-          {rooms.map((room) => (
+          {/* Render only non-Home rooms as closeable tabs */}
+          {rooms.filter(room => room.name !== "Home").map((room) => (
             <div
               key={room.roomId}
               style={{
@@ -224,12 +233,6 @@ export default function Home() {
               }}
             >
               <div
-                onClick={() => {
-                  setActiveRoom(room.roomId);
-                  if (socketRef.current) {
-                    socketRef.current.emit("join room", room.roomId);
-                  }
-                }}
                 style={{
                   padding: "10px 24px 10px 24px",
                   cursor: "pointer",
@@ -243,6 +246,7 @@ export default function Home() {
                   minWidth: 80,
                   textAlign: "center"
                 }}
+                onClick={() => setActiveRoom(room.roomId)}
               >
                 {room.name}
               </div>
@@ -253,14 +257,13 @@ export default function Home() {
                     socketRef.current.emit("leave private room", { roomId: room.roomId });
                   }
                   setRooms((prev) => prev.filter(r => r.roomId !== room.roomId));
-                  // Remove only this room's messages
                   setMessagesByRoom(prev => {
                     const copy = { ...prev };
                     delete copy[room.roomId];
                     return copy;
                   });
                   if (activeRoom === room.roomId) {
-                    setActiveRoom(null);
+                    setActiveRoom(globalRoomId);
                   }
                 }}
                 style={{
@@ -332,10 +335,10 @@ export default function Home() {
             padding: 10,
             background: "#ffffffff"
           }}>
-            {(messagesByRoom[activeRoom || "home"]?.length ?? 0) === 0 ? (
+            {(messagesByRoom[activeRoom]?.length ?? 0) === 0 ? (
               <div style={{ color: "#000000ff" }}>No messages yet.</div>
             ) : (
-              messagesByRoom[activeRoom || "home"]?.map((msg, idx) => (
+              messagesByRoom[activeRoom]?.map((msg, idx) => (
                 <div key={idx} style={{ marginBottom: 6, color: "#000000ff" }}>
                   <b>{msg.user}:</b> {msg.text}
                 </div>
@@ -345,6 +348,7 @@ export default function Home() {
           <form onSubmit={handleSend} style={{ display: "flex", gap: 8 }}>
             <input
               type="text"
+              name="chatInput"
               value={input}
               onChange={(e) => setInput(e.target.value)}
               placeholder="Type a message..."
@@ -388,7 +392,8 @@ export default function Home() {
                 // Find the active room object
                 const activeRoomObj = rooms.find(r => r.roomId === activeRoom);
                 const isCreator = activeRoomObj && activeRoomObj.creator === username;
-                const canInvite = isCreator && u.username !== username && activeRoomObj;
+                // Only allow invite if NOT the Home room
+                const canInvite = isCreator && u.username !== username && activeRoomObj && activeRoomObj.name !== "Home";
                 return (
                   <li
                     key={u.username}
