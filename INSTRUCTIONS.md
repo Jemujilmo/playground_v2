@@ -8,6 +8,46 @@ ___
 _challenge: see if you can allow users to create rooms after the initial requirements are completed. dynamic rooms will be more difficult than a static amount of rooms_
 ___
 
+09/24/2025
+## Update
+I have created a very rudimentary but also somewhat stylish and unique chat room built to be my very first project (go easy on me)
+Pretty much the entirety of this app is developed using Javascript. The backend is a Node.js app, deployed and running on a server (Render).
+The frontend (Next.js) is deployed separately (Vercel). Databasing created using Prisma and PostgreSQL
+
+Main features include the following:
+
+User Registration
+Validates input
+Stores hashed password
+
+User Login
+Validates credentials
+Updates user status to “online”
+
+User Status Tracking
+Tracks online/offline status
+Broadcasts status updates to all clients
+
+Chat Messaging
+Send messages to rooms
+Stores messages in database
+Broadcasts new messages to all room members
+
+Room Management
+Create private rooms
+Invite users to rooms
+Accept/decline invitations
+Leave rooms (delete if empty)
+Edit room names
+
+Real-Time Updates
+Uses Socket.io for live communication
+Reconnection logic for reliability
+Keepalive ping to maintain connection
+
+A stylish UI with much room to be improved on, I actually designed this webapp with the thought of the old school chat room website XAT in mind, maybe it could have been a bit more similar in that regard but for now this is how it will stay until I am inspired to crack at this some more with added features.
+
+
 09/04/2025
 Next.js + Socket.io + Prisma/SQLite
 

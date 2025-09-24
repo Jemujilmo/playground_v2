@@ -99,7 +99,7 @@ export default function Home() {
       if (socketRef.current && socketRef.current.connected && username) {
         socketRef.current.emit("ping", { username });
       }
-    }, 30000); // every 30 seconds
+    }, 30000);
 
     return () => clearInterval(interval);
   }, [username]);
@@ -107,7 +107,7 @@ export default function Home() {
   const handleSend = (e) => {
     e.preventDefault();
     if (input.trim() && socketRef.current && activeRoom !== null) {
-      const msg = { user: username, text: input, roomId: activeRoom }; // Numeric ID
+      const msg = { user: username, text: input, roomId: activeRoom };
       socketRef.current.emit("chat message", {
         text: input,
         user: username,
