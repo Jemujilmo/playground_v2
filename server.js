@@ -337,7 +337,6 @@ io.on('connection', async (socket) => {
             where: { username: socket.username },
             data: { status: "offline" }
           });
-          broadcastUserStatus();
         }
       }
     }
@@ -347,6 +346,7 @@ io.on('connection', async (socket) => {
         text: `${socket.username || socket.id} has disconnected.`
       });
     }
+    broadcastUserStatus();
   });
 
   //User status ping logic
