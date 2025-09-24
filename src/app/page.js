@@ -36,6 +36,9 @@ export default function Home() {
     // Only create socket if not already created
     if (!socketRef.current) {
       socketRef.current = io(process.env.NEXT_PUBLIC_SOCKET_URL, {
+        reconnection: true,
+        reconnectionAttempts: 10,
+        reconnectionDelay: 1000,
         query: { username: storedUsername }
       });
       // Store messages per room or home
@@ -92,10 +95,12 @@ export default function Home() {
   }, []); // <--- Only on mount/unmount
 
   useEffect(() => {
-    if (!socketRef.current || !username) return;
     const interval = setInterval(() => {
-      socketRef.current.emit('ping', { username });
-    }, 10000); // ping every 10s
+      if (socketRef.current && socketRef.current.connected && username) {
+        socketRef.current.emit("ping", { username });
+      }
+    }, 30000); // every 30 seconds
+
     return () => clearInterval(interval);
   }, [username]);
 
@@ -126,6 +131,21 @@ export default function Home() {
       socketRef.current.emit("join room", activeRoom);
     }
   }, [activeRoom]);
+
+  //listeners for connection errors and disconnections
+  useEffect(() => {
+    if (!socketRef.current) return;
+    socketRef.current.on("connect_error", (err) => {
+      console.error("Socket connection error:", err);
+    });
+    socketRef.current.on("disconnect", () => {
+      console.warn("Socket disconnected");
+    });
+    return () => {
+      socketRef.current.off("connect_error");
+      socketRef.current.off("disconnect");
+    };
+  }, []);
 
   return (
     <div style={{ minHeight: "100vh", position: "relative", background: "#000000ff", display: "flex", flexDirection: "row", width: "100vw" }}>
